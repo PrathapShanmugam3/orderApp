@@ -174,6 +174,190 @@ app.post('/call-log', async (req, res) => {
   }
 });
 
+// =============================================
+// EXPENSE CALCULATOR ROUTES
+// =============================================
+
+// 4.1 Create Expense
+app.post('/expenses', async (req, res) => {
+  const { userId, amount, category, date, notes } = req.body;
+  try {
+    const [result] = await pool.execute(
+      'INSERT INTO expense (user_id, amount, category, date, notes) VALUES (?, ?, ?, ?, ?)',
+      [userId, amount, category, date, notes || '']
+    );
+    const [newExpense] = await pool.execute('SELECT * FROM expense WHERE id = ?', [result.insertId]);
+    res.status(201).json(newExpense[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// 4.2 Get All Expenses for a User
+app.get('/expenses/:userId', async (req, res) => {
+  const { userId } = req.params;
+  try {
+    const [rows] = await pool.execute(
+      'SELECT * FROM expense WHERE user_id = ? ORDER BY date DESC',
+      [userId]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// 4.3 Get Expenses by Date
+app.get('/expenses/:userId/date/:date', async (req, res) => {
+  const { userId, date } = req.params;
+  try {
+    const [rows] = await pool.execute(
+      'SELECT * FROM expense WHERE user_id = ? AND DATE(date) = ? ORDER BY date DESC',
+      [userId, date]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// 4.4 Get Expenses by Month
+app.get('/expenses/:userId/month/:year/:month', async (req, res) => {
+  const { userId, year, month } = req.params;
+  try {
+    const [rows] = await pool.execute(
+      'SELECT * FROM expense WHERE user_id = ? AND YEAR(date) = ? AND MONTH(date) = ? ORDER BY date DESC',
+      [userId, year, month]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// 4.5 Get Expenses by Year
+app.get('/expenses/:userId/year/:year', async (req, res) => {
+  const { userId, year } = req.params;
+  try {
+    const [rows] = await pool.execute(
+      'SELECT * FROM expense WHERE user_id = ? AND YEAR(date) = ? ORDER BY date DESC',
+      [userId, year]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// 4.6 Get Summary Totals (Today, Month, Year)
+app.get('/expenses/:userId/summary', async (req, res) => {
+  const { userId } = req.params;
+  try {
+    // Today's total
+    const [todayResult] = await pool.execute(
+      'SELECT COALESCE(SUM(amount), 0) as total FROM expense WHERE user_id = ? AND DATE(date) = CURDATE()',
+      [userId]
+    );
+    // This month's total
+    const [monthResult] = await pool.execute(
+      'SELECT COALESCE(SUM(amount), 0) as total FROM expense WHERE user_id = ? AND YEAR(date) = YEAR(CURDATE()) AND MONTH(date) = MONTH(CURDATE())',
+      [userId]
+    );
+    // This year's total
+    const [yearResult] = await pool.execute(
+      'SELECT COALESCE(SUM(amount), 0) as total FROM expense WHERE user_id = ? AND YEAR(date) = YEAR(CURDATE())',
+      [userId]
+    );
+    res.json({
+      today: todayResult[0].total,
+      month: monthResult[0].total,
+      year: yearResult[0].total
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// 4.7 Get Category-wise Totals
+app.get('/expenses/:userId/categories', async (req, res) => {
+  const { userId } = req.params;
+  try {
+    const [rows] = await pool.execute(
+      'SELECT category, SUM(amount) as total FROM expense WHERE user_id = ? GROUP BY category ORDER BY total DESC',
+      [userId]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// 4.8 Get Day-wise Totals for a Month
+app.get('/expenses/:userId/daywisе/:year/:month', async (req, res) => {
+  const { userId, year, month } = req.params;
+  try {
+    const [rows] = await pool.execute(
+      'SELECT DAY(date) as day, SUM(amount) as total FROM expense WHERE user_id = ? AND YEAR(date) = ? AND MONTH(date) = ? GROUP BY DAY(date) ORDER BY day',
+      [userId, year, month]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// 4.9 Get Month-wise Totals for a Year
+app.get('/expenses/:userId/monthwise/:year', async (req, res) => {
+  const { userId, year } = req.params;
+  try {
+    const [rows] = await pool.execute(
+      'SELECT MONTH(date) as month, SUM(amount) as total FROM expense WHERE user_id = ? AND YEAR(date) = ? GROUP BY MONTH(date) ORDER BY month',
+      [userId, year]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// 4.10 Update Expense
+app.put('/expenses/:id', async (req, res) => {
+  const { id } = req.params;
+  const { amount, category, date, notes } = req.body;
+  try {
+    await pool.execute(
+      'UPDATE expense SET amount = ?, category = ?, date = ?, notes = ? WHERE id = ?',
+      [amount, category, date, notes || '', id]
+    );
+    const [updated] = await pool.execute('SELECT * FROM expense WHERE id = ?', [id]);
+    res.json(updated[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// 4.11 Delete Expense
+app.delete('/expenses/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    await pool.execute('DELETE FROM expense WHERE id = ?', [id]);
+    res.json({ message: 'Expense deleted successfully' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
 // Root route for Vercel
 app.get('/', (req, res) => {
   res.send('Order App Backend is Running (MySQL)');
