@@ -80,7 +80,84 @@ app.post('/login', async (req, res) => {
       return res.status(400).json({ error: 'Invalid credentials' });
     }
 
-    res.json({ id: user.id, email: user.email, message: 'Login successful' });
+    res.json({ id: user.id, email: user.email, isAdmin: user.is_admin || false, message: 'Login successful' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// ===== CATEGORY MANAGEMENT (Admin only for CUD) =====
+
+// Get all categories (public)
+app.get('/categories', async (req, res) => {
+  try {
+    const [rows] = await pool.execute('SELECT * FROM expense_categories ORDER BY name ASC');
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// Admin check middleware
+const checkAdmin = async (req, res, next) => {
+  const userId = req.headers['x-user-id'];
+  if (!userId) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  try {
+    const [users] = await pool.execute('SELECT is_admin FROM app_users WHERE id = ?', [userId]);
+    if (users.length === 0 || !users[0].is_admin) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+    next();
+  } catch (err) {
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+};
+
+// Create category (admin only)
+app.post('/categories', checkAdmin, async (req, res) => {
+  const { name, icon, color } = req.body;
+  try {
+    const [existing] = await pool.execute('SELECT * FROM expense_categories WHERE name = ?', [name]);
+    if (existing.length > 0) {
+      return res.status(400).json({ error: 'Category already exists' });
+    }
+    const [result] = await pool.execute(
+      'INSERT INTO expense_categories (name, icon, color) VALUES (?, ?, ?)',
+      [name, icon || '📦', color || '#6B7280']
+    );
+    res.status(201).json({ id: result.insertId, name, icon: icon || '📦', color: color || '#6B7280' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// Update category (admin only)
+app.put('/categories/:id', checkAdmin, async (req, res) => {
+  const { id } = req.params;
+  const { name, icon, color } = req.body;
+  try {
+    await pool.execute(
+      'UPDATE expense_categories SET name = ?, icon = ?, color = ? WHERE id = ?',
+      [name, icon, color, id]
+    );
+    res.json({ id: parseInt(id), name, icon, color });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// Delete category (admin only)
+app.delete('/categories/:id', checkAdmin, async (req, res) => {
+  const { id } = req.params;
+  try {
+    await pool.execute('DELETE FROM expense_categories WHERE id = ?', [id]);
+    res.json({ message: 'Category deleted' });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Internal Server Error' });
