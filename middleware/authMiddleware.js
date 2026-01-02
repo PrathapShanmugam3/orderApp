@@ -1,6 +1,6 @@
 const UserModel = require('../models/userModel');
 
-// Admin check middleware
+// Admin check middleware (role_id = 3)
 const isAdmin = async (req, res, next) => {
     const userId = req.headers['x-user-id'];
     if (!userId) {

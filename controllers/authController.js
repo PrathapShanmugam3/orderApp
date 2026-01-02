@@ -36,7 +36,8 @@ class AuthController {
             res.json({
                 id: user.id,
                 email: user.email,
-                isAdmin: user.is_admin || false,
+                roleId: user.role_id || 1,
+                isAdmin: user.role_id === UserModel.ROLE_ADMIN,
                 message: 'Login successful'
             });
         } catch (err) {
@@ -64,6 +65,42 @@ class AuthController {
             res.json({ message: 'Password changed successfully' });
         } catch (err) {
             console.error('Change password error:', err);
+            res.status(500).json({ error: 'Internal Server Error' });
+        }
+    }
+
+    // Get all users (admin only)
+    static async getAllUsers(req, res) {
+        try {
+            const users = await UserModel.findAll();
+            res.json(users);
+        } catch (err) {
+            console.error('Get users error:', err);
+            res.status(500).json({ error: 'Internal Server Error' });
+        }
+    }
+
+    // Update user role (admin only)
+    static async updateUserRole(req, res) {
+        const { id } = req.params;
+        const { roleId } = req.body;
+        try {
+            await UserModel.updateRole(id, roleId);
+            res.json({ message: 'Role updated successfully' });
+        } catch (err) {
+            console.error('Update role error:', err);
+            res.status(500).json({ error: 'Internal Server Error' });
+        }
+    }
+
+    // Delete user (admin only)
+    static async deleteUser(req, res) {
+        const { id } = req.params;
+        try {
+            await UserModel.delete(id);
+            res.json({ message: 'User deleted successfully' });
+        } catch (err) {
+            console.error('Delete user error:', err);
             res.status(500).json({ error: 'Internal Server Error' });
         }
     }

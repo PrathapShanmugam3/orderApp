@@ -46,8 +46,21 @@ CREATE TABLE IF NOT EXISTS expense (
 CREATE INDEX idx_expense_user_date ON expense(user_id, date);
 CREATE INDEX idx_expense_category ON expense(user_id, category);
 
--- Add is_admin column to app_users (run this ALTER if table exists)
--- ALTER TABLE app_users ADD COLUMN is_admin BOOLEAN DEFAULT FALSE;
+-- Roles table (already exists from your screenshot)
+-- CREATE TABLE IF NOT EXISTS roles (
+--   id INT AUTO_INCREMENT PRIMARY KEY,
+--   name VARCHAR(50) NOT NULL,
+--   createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+--   updatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+-- );
+
+-- Add role_id column to app_users (run this ALTER if table exists)
+-- Default role = 1 (user), Admin = 3
+-- ALTER TABLE app_users ADD COLUMN role_id INT DEFAULT 1;
+-- ALTER TABLE app_users ADD FOREIGN KEY (role_id) REFERENCES roles(id);
+
+-- To make a user admin, run:
+-- UPDATE app_users SET role_id = 3 WHERE email = 'admin@example.com';
 
 -- Create Expense Categories Table
 CREATE TABLE IF NOT EXISTS expense_categories (
