@@ -42,7 +42,7 @@ const bcrypt = require('bcryptjs');
 // Routes
 
 // 0. Auth Routes
-// 0.1 Register
+// 0.1 Register (default role_id = 1 = user)
 app.post('/register', async (req, res) => {
   const { email, password } = req.body;
   try {
@@ -54,17 +54,17 @@ app.post('/register', async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(password, 10);
     const [result] = await pool.execute(
-      'INSERT INTO app_users (email, password) VALUES (?, ?)',
-      [email, hashedPassword]
+      'INSERT INTO app_users (email, password, role_id) VALUES (?, ?, ?)',
+      [email, hashedPassword, 1]
     );
-    res.status(201).json({ id: result.insertId, email });
+    res.status(201).json({ id: result.insertId, email, roleId: 1 });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });
 
-// 0.2 Login
+// 0.2 Login (returns roleId)
 app.post('/login', async (req, res) => {
   const { email, password } = req.body;
   try {
@@ -80,7 +80,8 @@ app.post('/login', async (req, res) => {
       return res.status(400).json({ error: 'Invalid credentials' });
     }
 
-    res.json({ id: user.id, email: user.email, isAdmin: user.is_admin || false, message: 'Login successful' });
+    const roleId = user.role_id || 1;
+    res.json({ id: user.id, email: user.email, roleId: roleId, isAdmin: roleId === 3, message: 'Login successful' });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Internal Server Error' });
@@ -100,15 +101,15 @@ app.get('/categories', async (req, res) => {
   }
 });
 
-// Admin check middleware
+// Admin check middleware (role_id = 3)
 const checkAdmin = async (req, res, next) => {
   const userId = req.headers['x-user-id'];
   if (!userId) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
   try {
-    const [users] = await pool.execute('SELECT is_admin FROM app_users WHERE id = ?', [userId]);
-    if (users.length === 0 || !users[0].is_admin) {
+    const [users] = await pool.execute('SELECT role_id FROM app_users WHERE id = ?', [userId]);
+    if (users.length === 0 || users[0].role_id !== 3) {
       return res.status(403).json({ error: 'Admin access required' });
     }
     next();
@@ -116,6 +117,44 @@ const checkAdmin = async (req, res, next) => {
     res.status(500).json({ error: 'Internal Server Error' });
   }
 };
+
+// ===== ADMIN USER MANAGEMENT =====
+
+// Get all users (admin only)
+app.get('/auth/users', checkAdmin, async (req, res) => {
+  try {
+    const [rows] = await pool.execute('SELECT id, email, role_id, created_at FROM app_users ORDER BY id ASC');
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// Update user role (admin only)
+app.put('/auth/users/:id/role', checkAdmin, async (req, res) => {
+  const { id } = req.params;
+  const { roleId } = req.body;
+  try {
+    await pool.execute('UPDATE app_users SET role_id = ? WHERE id = ?', [roleId, id]);
+    res.json({ message: 'Role updated successfully' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// Delete user (admin only)
+app.delete('/auth/users/:id', checkAdmin, async (req, res) => {
+  const { id } = req.params;
+  try {
+    await pool.execute('DELETE FROM app_users WHERE id = ?', [id]);
+    res.json({ message: 'User deleted successfully' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
 
 // Create category (admin only)
 app.post('/categories', checkAdmin, async (req, res) => {
