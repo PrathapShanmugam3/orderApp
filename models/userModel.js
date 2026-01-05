@@ -21,7 +21,7 @@ class UserModel {
 
     // Get all users (admin only)
     static async findAll() {
-        const [users] = await pool.execute('SELECT id, email, role_id, created_at FROM app_users ORDER BY id ASC');
+        const [users] = await pool.execute('SELECT id, email, role_id FROM app_users ORDER BY id ASC');
         return users;
     }
 

@@ -154,7 +154,7 @@ const checkAdmin = async (req, res, next) => {
 // Get all users (admin only)
 app.get('/auth/users', checkAdmin, async (req, res) => {
   try {
-    const [rows] = await pool.execute('SELECT id, email, role_id, created_at FROM app_users ORDER BY id ASC');
+    const [rows] = await pool.execute('SELECT id, email, role_id FROM app_users ORDER BY id ASC');
     res.json(rows);
   } catch (err) {
     console.error(err);
