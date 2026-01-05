@@ -43,6 +43,7 @@ class UserModel {
     // Check if user is admin (role_id = 3)
     static async isAdmin(userId) {
         const [users] = await pool.execute('SELECT role_id FROM app_users WHERE id = ?', [userId]);
+        console.log(`[UserModel] isAdmin check for ${userId}:`, users[0]);
         return users[0]?.role_id === this.ROLE_ADMIN;
     }
 

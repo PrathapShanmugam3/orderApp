@@ -76,7 +76,7 @@ class AuthController {
             res.json(users);
         } catch (err) {
             console.error('Get users error:', err);
-            res.status(500).json({ error: 'Internal Server Error' });
+            res.status(500).json({ error: 'Internal Server Error', details: err.message });
         }
     }
 

@@ -104,17 +104,23 @@ app.get('/categories', async (req, res) => {
 // Admin check middleware (role_id = 3)
 const checkAdmin = async (req, res, next) => {
   const userId = req.headers['x-user-id'];
+  console.log(`[API] checkAdmin for userId: ${userId}`);
   if (!userId) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
   try {
     const [users] = await pool.execute('SELECT role_id FROM app_users WHERE id = ?', [userId]);
-    if (users.length === 0 || users[0].role_id !== 3) {
+    console.log(`[API] checkAdmin user result:`, users[0]);
+
+    // Loose equality to handle string/number mismatch
+    if (users.length === 0 || users[0].role_id != 3) {
+      console.log(`[API] Access denied. role_id: ${users[0]?.role_id}`);
       return res.status(403).json({ error: 'Admin access required' });
     }
     next();
   } catch (err) {
-    res.status(500).json({ error: 'Internal Server Error' });
+    console.error('[API] checkAdmin error:', err);
+    res.status(500).json({ error: 'Internal Server Error', details: err.message });
   }
 };
 
