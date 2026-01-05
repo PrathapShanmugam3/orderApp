@@ -88,6 +88,31 @@ app.post('/login', async (req, res) => {
   }
 });
 
+// 0.3 Change Password
+app.put('/auth/password/:id', async (req, res) => {
+  const { id } = req.params;
+  const { currentPassword, newPassword } = req.body;
+  try {
+    const [users] = await pool.execute('SELECT * FROM app_users WHERE id = ?', [id]);
+    if (users.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    const user = users[0];
+
+    const isMatch = await bcrypt.compare(currentPassword, user.password);
+    if (!isMatch) {
+      return res.status(400).json({ error: 'Current password is incorrect' });
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    await pool.execute('UPDATE app_users SET password = ? WHERE id = ?', [hashedPassword, id]);
+    res.json({ message: 'Password changed successfully' });
+  } catch (err) {
+    console.error('Change password error:', err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
 // ===== CATEGORY MANAGEMENT (Admin only for CUD) =====
 
 // Get all categories (public)
