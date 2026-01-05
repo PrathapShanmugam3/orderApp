@@ -3,9 +3,10 @@ const pool = require('../config/database');
 class ExpenseModel {
     // Create expense
     static async create(userId, amount, category, date, notes) {
+        const formattedDate = new Date(date).toISOString().slice(0, 19).replace('T', ' ');
         const [result] = await pool.execute(
             'INSERT INTO expense (user_id, amount, category, date, notes) VALUES (?, ?, ?, ?, ?)',
-            [userId, amount, category, date, notes || '']
+            [userId, amount, category, formattedDate, notes || '']
         );
         return { id: result.insertId, userId, amount, category, date, notes };
     }
@@ -48,9 +49,14 @@ class ExpenseModel {
 
     // Get summary (today, month, year totals)
     static async getSummary(userId) {
-        const today = new Date().toISOString().split('T')[0];
-        const currentMonth = new Date().getMonth() + 1;
-        const currentYear = new Date().getFullYear();
+        // Construct local date string YYYY-MM-DD
+        const now = new Date();
+        const year = now.getFullYear();
+        const month = now.getMonth() + 1;
+        const day = now.getDate();
+        const today = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+
+        console.log(`[ExpenseModel] Getting summary for userId: ${userId}, Date: ${today}`);
 
         const [[todayResult]] = await pool.execute(
             'SELECT COALESCE(SUM(amount), 0) as total FROM expense WHERE user_id = ? AND DATE(date) = ?',
@@ -58,12 +64,18 @@ class ExpenseModel {
         );
         const [[monthResult]] = await pool.execute(
             'SELECT COALESCE(SUM(amount), 0) as total FROM expense WHERE user_id = ? AND YEAR(date) = ? AND MONTH(date) = ?',
-            [userId, currentYear, currentMonth]
+            [userId, year, month]
         );
         const [[yearResult]] = await pool.execute(
             'SELECT COALESCE(SUM(amount), 0) as total FROM expense WHERE user_id = ? AND YEAR(date) = ?',
-            [userId, currentYear]
+            [userId, year]
         );
+
+        console.log('[ExpenseModel] Summary results:', {
+            today: todayResult.total,
+            month: monthResult.total,
+            year: yearResult.total
+        });
 
         return {
             today: parseFloat(todayResult.total),
@@ -101,9 +113,10 @@ class ExpenseModel {
 
     // Update expense
     static async update(id, amount, category, date, notes) {
+        const formattedDate = new Date(date).toISOString().slice(0, 19).replace('T', ' ');
         await pool.execute(
             'UPDATE expense SET amount = ?, category = ?, date = ?, notes = ? WHERE id = ?',
-            [amount, category, date, notes, id]
+            [amount, category, formattedDate, notes, id]
         );
         return { id: parseInt(id), amount, category, date, notes };
     }
