@@ -47,6 +47,47 @@ async function updateSchema() {
             await pool.execute(insertDefaults);
         }
 
+        // 1.2 Create roles table
+        console.log('Checking roles table...');
+        const createRoles = `
+            CREATE TABLE IF NOT EXISTS roles (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                name VARCHAR(50) NOT NULL,
+                createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            );
+        `;
+        await pool.execute(createRoles);
+        console.log('roles table ensured.');
+
+        // Insert default roles
+        const [rolesCount] = await pool.execute('SELECT count(*) as count FROM roles');
+        if (rolesCount[0].count === 0) {
+            console.log('Inserting default roles...');
+            const insertRoles = `
+                INSERT INTO roles (id, name) VALUES
+                (1, 'user'),
+                (2, 'moderator'),
+                (3, 'admin');
+            `;
+            await pool.execute(insertRoles);
+            console.log('Default roles inserted.');
+        }
+
+        // 1.5 Create app_users table if not exists
+        console.log('Checking app_users table...');
+        const createAppUsers = `
+            CREATE TABLE IF NOT EXISTS app_users (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                email VARCHAR(255) NOT NULL UNIQUE,
+                password VARCHAR(255) NOT NULL,
+                role_id INT DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `;
+        await pool.execute(createAppUsers);
+        console.log('app_users table ensured.');
+
         // 2. Add role_id to app_users
         console.log('Checking app_users columns...');
         const [columns] = await pool.execute("SHOW COLUMNS FROM app_users");

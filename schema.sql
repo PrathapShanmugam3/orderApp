@@ -30,6 +30,15 @@ CREATE TABLE IF NOT EXISTS call_log (
 -- ('Jane Smith', '0987654321', 'Uptown'),
 -- ('Alice Johnson', '5551234567', 'Suburbs');
 
+-- Create App Users Table
+CREATE TABLE IF NOT EXISTS app_users (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  email VARCHAR(255) NOT NULL UNIQUE,
+  password VARCHAR(255) NOT NULL,
+  role_id INT DEFAULT 1,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Create Expense Table for Expense Calculator
 CREATE TABLE IF NOT EXISTS expense (
   id INT AUTO_INCREMENT PRIMARY KEY,
@@ -46,13 +55,13 @@ CREATE TABLE IF NOT EXISTS expense (
 CREATE INDEX idx_expense_user_date ON expense(user_id, date);
 CREATE INDEX idx_expense_category ON expense(user_id, category);
 
--- Roles table (already exists from your screenshot)
--- CREATE TABLE IF NOT EXISTS roles (
---   id INT AUTO_INCREMENT PRIMARY KEY,
---   name VARCHAR(50) NOT NULL,
---   createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
---   updatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
--- );
+-- Roles table
+CREATE TABLE IF NOT EXISTS roles (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(50) NOT NULL,
+  createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
 
 -- Add role_id column to app_users (run this ALTER if table exists)
 -- Default role = 1 (user), Admin = 3

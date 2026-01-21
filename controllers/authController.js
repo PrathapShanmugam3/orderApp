@@ -5,6 +5,11 @@ class AuthController {
     static async register(req, res) {
         const { email, password } = req.body;
         try {
+            // Validate password length
+            if (!password || password.length < 6 || password.length > 15) {
+                return res.status(400).json({ error: 'Password must be between 6 and 15 characters' });
+            }
+
             // Check if user exists
             const existingUser = await UserModel.findByEmail(email);
             if (existingUser) {
@@ -51,6 +56,11 @@ class AuthController {
         const { id } = req.params;
         const { currentPassword, newPassword } = req.body;
         try {
+            // Validate new password length
+            if (!newPassword || newPassword.length < 6 || newPassword.length > 15) {
+                return res.status(400).json({ error: 'New password must be between 6 and 15 characters' });
+            }
+
             const user = await UserModel.findById(id);
             if (!user) {
                 return res.status(404).json({ error: 'User not found' });

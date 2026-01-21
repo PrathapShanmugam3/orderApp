@@ -15,6 +15,10 @@ async function check() {
         const [users] = await pool.execute('SELECT * FROM app_users');
         console.log('Users:', users);
 
+        console.log('Checking roles table...');
+        const [roles] = await pool.execute('SELECT * FROM roles');
+        console.log('Roles:', roles);
+
         console.log('Checking expense table...');
         const [tables] = await pool.execute("SHOW TABLES LIKE 'expense'");
         if (tables.length === 0) {

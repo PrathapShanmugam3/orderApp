@@ -9,17 +9,20 @@ require('./config/database');
 const authRoutes = require('./routes/authRoutes');
 const categoryRoutes = require('./routes/categoryRoutes');
 const expenseRoutes = require('./routes/expenseRoutes');
+const backupRoutes = require('./routes/backupRoutes');
 
 const app = express();
 
 // Middleware
 app.use(cors());
 app.use(express.json());
+app.use(express.text({ limit: '50mb' })); // Allow large SQL dumps
 
 // Routes
 app.use('/auth', authRoutes);           // /auth/register, /auth/login, /auth/password/:id
 app.use('/categories', categoryRoutes); // /categories CRUD
 app.use('/expenses', expenseRoutes);    // /expenses CRUD
+app.use('/admin', backupRoutes);        // /admin/backup, /admin/restore
 
 // Legacy routes (for backward compatibility)
 // These map old routes to new ones
