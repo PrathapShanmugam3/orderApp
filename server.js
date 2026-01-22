@@ -131,9 +131,13 @@ app.post('/orders', async (req, res) => {
 
 // Start server
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`🚀 Server running on port ${PORT}`);
-    console.log(`📚 API Documentation: http://localhost:${PORT}/`);
-});
+
+// Only listen if run directly (not imported)
+if (require.main === module) {
+    app.listen(PORT, '0.0.0.0', () => {
+        console.log(`🚀 Server running on port ${PORT}`);
+        console.log(`📚 API Documentation: http://localhost:${PORT}/`);
+    });
+}
 
 module.exports = app;
