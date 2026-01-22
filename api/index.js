@@ -6,6 +6,8 @@ require('dotenv').config();
 const app = express();
 app.use(cors());
 app.use(express.json());
+app.use(express.text({ limit: '50mb' })); // For SQL restore
+
 
 
 // Database Connection
@@ -505,9 +507,107 @@ app.delete('/expenses/:id', async (req, res) => {
   }
 });
 
+// ===== BACKUP ROUTES (Admin only) =====
+app.get('/admin/backup', checkAdmin, async (req, res) => {
+  try {
+    console.log('Starting database dump...');
+    let dump = '';
+
+    // Add header
+    dump += `-- Database Dump\n`;
+    dump += `-- Generated: ${new Date().toISOString()}\n\n`;
+    dump += `SET FOREIGN_KEY_CHECKS=0;\n\n`;
+
+    // Get all tables
+    const [tables] = await pool.query('SHOW TABLES');
+    const tableNames = tables.map(t => Object.values(t)[0]);
+
+    for (const table of tableNames) {
+      // Get Create Table statement
+      const [createResult] = await pool.query(`SHOW CREATE TABLE ${table}`);
+      const createSql = createResult[0]['Create Table'];
+
+      dump += `-- Table structure for ${table}\n`;
+      dump += `DROP TABLE IF EXISTS ${table};\n`;
+      dump += `${createSql};\n\n`;
+
+      // Get Data
+      const [rows] = await pool.query(`SELECT * FROM ${table}`);
+      if (rows.length > 0) {
+        dump += `-- Dumping data for ${table}\n`;
+        dump += `INSERT INTO ${table} VALUES\n`;
+
+        const values = rows.map(row => {
+          const rowValues = Object.values(row).map(val => {
+            if (val === null) return 'NULL';
+            if (typeof val === 'number') return val;
+            if (val instanceof Date) return `'${val.toISOString().slice(0, 19).replace('T', ' ')}'`;
+            return `'${String(val).replace(/'/g, "\\'")}'`;
+          });
+          return `(${rowValues.join(', ')})`;
+        });
+
+        dump += values.join(',\n');
+        dump += `;\n\n`;
+      }
+    }
+
+    dump += `SET FOREIGN_KEY_CHECKS=1;\n`;
+
+    res.header('Content-Type', 'text/plain');
+    res.attachment(`backup_${new Date().toISOString().split('T')[0]}.sql`);
+    res.send(dump);
+
+  } catch (err) {
+    console.error('Backup error:', err);
+    res.status(500).json({ error: 'Backup failed', details: err.message });
+  }
+});
+
+app.post('/admin/restore', checkAdmin, async (req, res) => {
+  const sql = req.body;
+
+  if (!sql || typeof sql !== 'string') {
+    return res.status(400).json({ error: 'Invalid SQL dump provided' });
+  }
+
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+
+    const statements = sql
+      .split(/;\s*[\r\n]+/)
+      .filter(stmt => stmt.trim().length > 0);
+
+    for (const statement of statements) {
+      if (statement.trim().startsWith('--')) continue;
+      await connection.query(statement);
+    }
+
+    await connection.commit();
+    res.json({ message: 'Database restored successfully' });
+
+  } catch (err) {
+    await connection.rollback();
+    console.error('Restore error:', err);
+    res.status(500).json({ error: 'Restore failed', details: err.message });
+  } finally {
+    connection.release();
+  }
+});
+
 // Root route for Vercel
 app.get('/', (req, res) => {
-  res.send('Order App Backend is Running (MySQL)');
+  res.json({
+    message: 'Order App Backend is Running (MySQL)',
+    version: '2.1.0',
+    endpoints: {
+      auth: '/auth (register, login, password)',
+      categories: '/categories (CRUD - admin only for CUD)',
+      expenses: '/expenses (CRUD)',
+      backup: '/admin/backup, /admin/restore'
+    }
+  });
 });
 
 const PORT = process.env.PORT || 3000;
