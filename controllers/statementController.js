@@ -65,14 +65,28 @@ const parseDate = (dateStr) => {
         if (months[monthStr] !== undefined) return new Date(year, months[monthStr], day);
     }
 
-    // Try dd MMM (e.g. 19 Jan) - Missing Year
+    // Try dd MMM (e.g. 19 Jan) - Missing Year - Smart year inference
     match = dateStr.match(/^(\d{1,2})\s+([A-Za-z]+)$/);
     if (match) {
         const day = parseInt(match[1]);
         const monthStr = match[2].toLowerCase().substring(0, 3);
-        const year = new Date().getFullYear();
         const months = { 'jan': 0, 'feb': 1, 'mar': 2, 'apr': 3, 'may': 4, 'jun': 5, 'jul': 6, 'aug': 7, 'sep': 8, 'oct': 9, 'nov': 10, 'dec': 11 };
-        if (months[monthStr] !== undefined) return new Date(year, months[monthStr], day);
+
+        if (months[monthStr] !== undefined) {
+            const now = new Date();
+            const currentYear = now.getFullYear();
+            const currentMonth = now.getMonth();
+            const parsedMonth = months[monthStr];
+
+            // If the parsed month is more than 2 months in the future, assume it's from last year
+            // E.g., if current is Jan 2026 and date says "Dec", it's likely Dec 2025
+            let year = currentYear;
+            if (parsedMonth > currentMonth + 2) {
+                year = currentYear - 1;
+            }
+
+            return new Date(year, parsedMonth, day);
+        }
     }
 
     // Try dd-MM-yyyy
@@ -232,7 +246,9 @@ const processTransactionBlock = (block, expenses) => {
 // Skip the "in transaction section" check and match dates directly
 const parseGooglePayPdf = (lines) => {
     const expenses = [];
-    console.log('[GooglePay Parser] total lines:', lines.length);
+    console.log('[GooglePay Parser] Starting parse...');
+    console.log('[GooglePay Parser] Total lines:', lines.length);
+    console.log('[GooglePay Parser] First 20 lines:', lines.slice(0, 20));
 
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i].trim();
@@ -241,8 +257,11 @@ const parseGooglePayPdf = (lines) => {
         if (!dateMatch) continue;
 
         const date = parseDate(dateMatch[1]);
-        if (!date) continue;
-        console.log(`[GooglePay] date: ${dateMatch[1]}`);
+        if (!date) {
+            console.log(`[GooglePay] Failed to parse date: ${dateMatch[1]}`);
+            continue;
+        }
+        console.log(`[GooglePay] Found date: ${dateMatch[1]} => ${date.toISOString()}`);
 
         let description = '';
         let amount = 0;
@@ -251,19 +270,27 @@ const parseGooglePayPdf = (lines) => {
         // Look ahead up to 10 lines
         for (let j = i + 1; j < Math.min(i + 10, lines.length); j++) {
             const next = lines[j].trim();
-            if (next.match(/^\d{1,2}\s+[A-Za-z]{3},?\s+\d{4}$/)) break; // Hit another date
+            console.log(`[GooglePay]   Checking line ${j}: "${next}"`);
+
+            if (next.match(/^\d{1,2}\s+[A-Za-z]{3},?\s+\d{4}$/)) {
+                console.log(`[GooglePay]   Hit another date, stopping`);
+                break;
+            }
 
             if (next.startsWith('Paid to ')) {
                 isDebit = true;
                 description = next.replace('Paid to ', '').trim();
+                console.log(`[GooglePay]   Found DEBIT transaction: ${description}`);
             }
             if (next.startsWith('Received from')) {
                 isDebit = false;
+                console.log(`[GooglePay]   Found CREDIT transaction (skip)`);
                 break;
             }
             const amt = next.match(/^₹?\s*(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)$/);
             if (amt && parseFloat(amt[1].replace(/,/g, '')) < 1000000) {
                 amount = parseFloat(amt[1].replace(/,/g, ''));
+                console.log(`[GooglePay]   Found amount: ₹${amount}`);
             }
         }
 
@@ -274,9 +301,12 @@ const parseGooglePayPdf = (lines) => {
                 description: description.substring(0, 50),
                 category: 'Other'
             });
+            console.log(`[GooglePay] ✓ Added expense: ${description} - ₹${amount}`);
+        } else {
+            console.log(`[GooglePay] ✗ Skipped (isDebit:${isDebit}, amount:${amount}, desc:"${description}")`);
         }
     }
-    console.log(`[GooglePay] Found ${expenses.length} expenses`);
+    console.log(`[GooglePay] FINAL: Found ${expenses.length} total expenses`);
     return expenses;
 };
 
@@ -284,15 +314,60 @@ const parsePaytmPdf = (lines) => {
     const expenses = [];
     console.log('[Paytm Parser] total lines:', lines.length);
 
+    // Try to extract statement period from header (e.g., "1 APR'25 - 21 JAN'26")
+    let periodStartMonth = null;
+    let periodStartYear = null;
+    let periodEndMonth = null;
+    let periodEndYear = null;
+
+    const monthMap = { 'jan': 0, 'feb': 1, 'mar': 2, 'apr': 3, 'may': 4, 'jun': 5, 'jul': 6, 'aug': 7, 'sep': 8, 'oct': 9, 'nov': 10, 'dec': 11 };
+
+    for (let i = 0; i < Math.min(30, lines.length); i++) {
+        const line = lines[i].toLowerCase();
+        // Match: "1 APR'25 - 21 JAN'26" or "1 APR '25 - 21 JAN '26"
+        const periodMatch = line.match(/(\d{1,2})\s+([a-z]{3})'?\s*(\d{2})\s*-\s*(\d{1,2})\s+([a-z]{3})'?\s*(\d{2})/);
+        if (periodMatch) {
+            periodStartMonth = monthMap[periodMatch[2]];
+            periodStartYear = 2000 + parseInt(periodMatch[3]);
+            periodEndMonth = monthMap[periodMatch[5]];
+            periodEndYear = 2000 + parseInt(periodMatch[6]);
+            console.log(`[Paytm] Found statement period: ${periodMatch[2]} ${periodStartYear} - ${periodMatch[5]} ${periodEndYear}`);
+            break;
+        }
+    }
+
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i].trim();
         // Match date on its own line: "17 Jan"
         const dateMatch = line.match(/^(\d{1,2}\s+[A-Za-z]{3})$/);
         if (!dateMatch) continue;
 
-        const date = parseDate(dateMatch[1]);
-        if (!date) continue;
-        console.log(`[Paytm] date: ${dateMatch[1]}`);
+        const dateStr = dateMatch[1];
+        const parts = dateStr.split(' ');
+        const day = parseInt(parts[0]);
+        const monthStr = parts[1].toLowerCase().substring(0, 3);
+        const month = monthMap[monthStr];
+
+        if (month === undefined) continue;
+
+        // Smart year inference using statement period
+        let year = new Date().getFullYear();
+        if (periodStartYear && periodEndYear) {
+            // If we have statement period, use it to determine year
+            if (periodStartYear === periodEndYear) {
+                year = periodStartYear;
+            } else {
+                // Cross-year statement: if month is >= start month, use start year, else use end year
+                if (month >= periodStartMonth) {
+                    year = periodStartYear;
+                } else {
+                    year = periodEndYear;
+                }
+            }
+        }
+
+        const date = new Date(year, month, day);
+        console.log(`[Paytm] date: ${dateStr} => ${year}-${month + 1}-${day} (${date.toISOString()})`);
 
         let description = '';
         let amount = 0;
@@ -301,18 +376,23 @@ const parsePaytmPdf = (lines) => {
 
         for (let j = i + 1; j < Math.min(i + 15, lines.length); j++) {
             const next = lines[j].trim();
-            if (next.match(/^\d{1,2}\s+[A-Za-z]{3}$/)) break; // Hit another date
+            if (next.match(/^\d{1,2}\s+[A-Za-z]{3}$/)) break;
 
             if (next.startsWith('Paid to ')) {
                 isDebit = true;
                 description = next.replace('Paid to ', '').split('UPI')[0].split('UP')[0].trim();
+                console.log(`[Paytm]   Found: ${description}`);
             }
             const tag = next.match(/^#\s*([A-Za-z]+)$/);
-            if (tag) category = tag[1].charAt(0).toUpperCase() + tag[1].slice(1);
+            if (tag) {
+                category = tag[1].charAt(0).toUpperCase() + tag[1].slice(1);
+                console.log(`[Paytm]   Tag: ${category}`);
+            }
 
             const amt = next.match(/^(?:Rs\.?|₹)?\s*(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)$/);
             if (amt && parseFloat(amt[1].replace(/,/g, '')) < 1000000) {
                 amount = parseFloat(amt[1].replace(/,/g, ''));
+                console.log(`[Paytm]   Amount: ₹${amount}`);
             }
         }
 
@@ -323,9 +403,10 @@ const parsePaytmPdf = (lines) => {
                 description: description.substring(0, 50),
                 category
             });
+            console.log(`[Paytm] ✓ Added: ${description} - ₹${amount} [${category}]`);
         }
     }
-    console.log(`[Paytm] Found ${expenses.length} expenses`);
+    console.log(`[Paytm] FINAL: Found ${expenses.length} expenses`);
     return expenses;
 };
 
