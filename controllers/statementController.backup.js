@@ -229,103 +229,140 @@ const processTransactionBlock = (block, expenses) => {
     });
 };
 
-// Skip the "in transaction section" check and match dates directly
 const parseGooglePayPdf = (lines) => {
     const expenses = [];
-    console.log('[GooglePay Parser] total lines:', lines.length);
+    let inTransactionSection = false;
 
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i].trim();
-        // Match date on its own line: "03 Jul, 2025"
-        const dateMatch = line.match(/^(\d{1,2}\s+[A-Za-z]{3},?\s+\d{4})$/);
-        if (!dateMatch) continue;
 
-        const date = parseDate(dateMatch[1]);
-        if (!date) continue;
-        console.log(`[GooglePay] date: ${dateMatch[1]}`);
-
-        let description = '';
-        let amount = 0;
-        let isDebit = false;
-
-        // Look ahead up to 10 lines
-        for (let j = i + 1; j < Math.min(i + 10, lines.length); j++) {
-            const next = lines[j].trim();
-            if (next.match(/^\d{1,2}\s+[A-Za-z]{3},?\s+\d{4}$/)) break; // Hit another date
-
-            if (next.startsWith('Paid to ')) {
-                isDebit = true;
-                description = next.replace('Paid to ', '').trim();
-            }
-            if (next.startsWith('Received from')) {
-                isDebit = false;
-                break;
-            }
-            const amt = next.match(/^₹?\s*(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)$/);
-            if (amt && parseFloat(amt[1].replace(/,/g, '')) < 1000000) {
-                amount = parseFloat(amt[1].replace(/,/g, ''));
-            }
+        // Detect transaction section start
+        if (line.includes('Date & time') || line.includes('Transaction details')) {
+            inTransactionSection = true;
+            continue;
         }
 
-        if (isDebit && amount > 0 && description) {
-            expenses.push({
-                date: date.toISOString(),
-                amount,
-                description: description.substring(0, 50),
-                category: 'Other'
-            });
+        if (!inTransactionSection) continue;
+
+        // Parse transaction line: "01 Jul, 2025"
+        const dateMatch = line.match(/^(\d{1,2}\s+[A-Za-z]{3},?\s+\d{4})/);
+        if (dateMatch) {
+            const dateStr = dateMatch[1];
+            const date = parseDate(dateStr);
+
+            if (!date) continue;
+
+            // Look ahead for transaction details
+            let description = '';
+            let amount = 0;
+            let isDebit = false;
+
+            // Next few lines contain transaction info
+            for (let j = i + 1; j < Math.min(i + 10, lines.length); j++) {
+                const nextLine = lines[j].trim();
+
+                // Check for "Paid to" (debit)
+                if (nextLine.startsWith('Paid to ')) {
+                    isDebit = true;
+                    description = nextLine.replace('Paid to ', '').trim();
+                }
+
+                // Check for "Received from" (credit - skip)
+                if (nextLine.startsWith('Received from')) {
+                    isDebit = false;
+                    break;
+                }
+
+                // Extract amount: ₹900 or just 900
+                const amountMatch = nextLine.match(/₹?\s*(\d+(?:,\d+)*(?:\.\d{1,2})?)\s*$/);
+                if (amountMatch && !nextLine.includes('Transaction ID')) {
+                    amount = parseFloat(amountMatch[1].replace(/,/g, ''));
+                }
+
+                // Stop if we hit another date
+                if (nextLine.match(/^\d{1,2}\s+[A-Za-z]{3}/)) break;
+            }
+
+            if (isDebit && amount > 0 && description) {
+                expenses.push({
+                    date: date.toISOString(),
+                    amount,
+                    description: description.substring(0, 50),
+                    category: 'Other'
+                });
+            }
         }
     }
-    console.log(`[GooglePay] Found ${expenses.length} expenses`);
+
     return expenses;
 };
 
 const parsePaytmPdf = (lines) => {
     const expenses = [];
-    console.log('[Paytm Parser] total lines:', lines.length);
+    let inTransactionSection = false;
 
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i].trim();
-        // Match date on its own line: "17 Jan"
-        const dateMatch = line.match(/^(\d{1,2}\s+[A-Za-z]{3})$/);
-        if (!dateMatch) continue;
 
-        const date = parseDate(dateMatch[1]);
-        if (!date) continue;
-        console.log(`[Paytm] date: ${dateMatch[1]}`);
-
-        let description = '';
-        let amount = 0;
-        let category = 'Other';
-        let isDebit = false;
-
-        for (let j = i + 1; j < Math.min(i + 15, lines.length); j++) {
-            const next = lines[j].trim();
-            if (next.match(/^\d{1,2}\s+[A-Za-z]{3}$/)) break; // Hit another date
-
-            if (next.startsWith('Paid to ')) {
-                isDebit = true;
-                description = next.replace('Paid to ', '').split('UPI')[0].split('UP')[0].trim();
-            }
-            const tag = next.match(/^#\s*([A-Za-z]+)$/);
-            if (tag) category = tag[1].charAt(0).toUpperCase() + tag[1].slice(1);
-
-            const amt = next.match(/^(?:Rs\.?|₹)?\s*(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)$/);
-            if (amt && parseFloat(amt[1].replace(/,/g, '')) < 1000000) {
-                amount = parseFloat(amt[1].replace(/,/g, ''));
-            }
+        // Detect section headers
+        if (line.includes('Date &') || line.includes('Transaction Details') ||
+            line.includes('Passbook Payments History')) {
+            inTransactionSection = true;
+            continue;
         }
 
-        if (isDebit && amount > 0 && description) {
-            expenses.push({
-                date: date.toISOString(),
-                amount,
-                description: description.substring(0, 50),
-                category
-            });
+        if (!inTransactionSection) continue;
+
+        // Parse date: "19 Jan" or "19 Jan, 2025"
+        const dateMatch = line.match(/^(\d{1,2}\s+[A-Za-z]{3}(?:,?\s+\d{4})?)/);
+        if (dateMatch) {
+            const dateStr = dateMatch[1];
+            const date = parseDate(dateStr);
+
+            if (!date) continue;
+
+            let description = '';
+            let amount = 0;
+            let category = 'Other';
+            let isDebit = false;
+
+            // Look ahead for transaction details
+            for (let j = i + 1; j < Math.min(i + 15, lines.length); j++) {
+                const nextLine = lines[j].trim();
+
+                // Check for "Paid to" (debit)
+                if (nextLine.startsWith('Paid to ')) {
+                    isDebit = true;
+                    description = nextLine.replace('Paid to ', '').split('UPI')[0].trim();
+                }
+
+                // Extract category from tags: "# Groceries"
+                const tagMatch = nextLine.match(/#\s*([A-Za-z]+)/);
+                if (tagMatch) {
+                    category = tagMatch[1].charAt(0).toUpperCase() + tagMatch[1].slice(1).toLowerCase();
+                }
+
+                // Extract amount: "Rs.52" or "₹1,090"
+                const amountMatch = nextLine.match(/(?:Rs\.?|₹)\s*(\d+(?:,\d+)*(?:\.\d{1,2})?)/);
+                if (amountMatch) {
+                    amount = parseFloat(amountMatch[1].replace(/,/g, ''));
+                }
+
+                // Stop if we hit another date
+                if (nextLine.match(/^\d{1,2}\s+[A-Za-z]{3}/)) break;
+            }
+
+            if (isDebit && amount > 0 && description) {
+                expenses.push({
+                    date: date.toISOString(),
+                    amount,
+                    description: description.substring(0, 50),
+                    category
+                });
+            }
         }
     }
-    console.log(`[Paytm] Found ${expenses.length} expenses`);
+
     return expenses;
 };
 
