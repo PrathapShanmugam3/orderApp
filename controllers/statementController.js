@@ -224,9 +224,197 @@ const parsePdf = async (buffer) => {
 };
 
 const parseCsv = async (buffer) => {
-    // Implement CSV logic if needed, but user focused on PDF/Statement parsing
-    // For now, let's just return empty or implement basic CSV
-    return [];
+    const content = buffer.toString('utf8');
+
+    // Simple CSV parser that handles quoted fields
+    // We can use the 'csv-parser' library but we need to stream it.
+    // Since we have the buffer, let's just split by newline for simplicity 
+    // and use a regex for splitting commas respecting quotes.
+
+    // Let's use a simple line-based approach first as our logic is line-based mostly
+    const lines = content.split(/\r?\n/);
+    const parsedRows = [];
+
+    for (let line of lines) {
+        // Basic CSV split, handling quotes is complex but let's try simple split first
+        // or use a regex: /,(?=(?:(?:[^"]*"){2})*[^"]*$)/
+        const row = line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(s => s.trim().replace(/^"|"$/g, ''));
+        parsedRows.push(row);
+    }
+
+    // Reuse the logic from Dart port
+    return parseCsvRows(parsedRows);
+};
+
+const parseCsvRows = (rows) => {
+    let expenses = [];
+    if (rows.length === 0) return [];
+
+    // 1. Identify Headers
+    let headerIndex = -1;
+    let headers = [];
+
+    for (let i = 0; i < rows.length; i++) {
+        const rowStr = rows[i].map(e => e.toLowerCase().trim());
+        if (rowStr.includes('date') || rowStr.includes('transaction date') || rowStr.includes('dt')) {
+            headerIndex = i;
+            headers = rowStr;
+            break;
+        }
+    }
+
+    if (headerIndex === -1) return [];
+
+    // 2. Detect Format
+    let format = 'generic';
+    if (headers.includes('phonepe') || (headers.includes('transaction id') && headers.includes('provider reference id'))) {
+        format = 'phonepe';
+    } else if (headers.includes('google pay') || (headers.includes('transaction id') && headers.includes('status') && headers.includes('amount'))) {
+        format = 'gpay';
+    } else if (headers.includes('wallet txn id') || (headers.includes('debit') && headers.includes('credit') && headers.includes('activity'))) {
+        format = 'paytm';
+    }
+
+    console.log(`[StatementController] Detected CSV Format: ${format}`);
+
+    // 3. Parse Rows
+    for (let i = headerIndex + 1; i < rows.length; i++) {
+        const row = rows[i];
+        if (row.length === 0 || (row.length === 1 && !row[0])) continue;
+
+        try {
+            let date = null;
+            let amount = 0;
+            let description = "Expense";
+            let isDebit = false;
+
+            if (format === 'phonepe') {
+                const dateIdx = headers.findIndex(h => h.includes('date'));
+                const amountIdx = headers.findIndex(h => h.includes('amount'));
+                const typeIdx = headers.findIndex(h => h.includes('type') || h.includes('cr/dr'));
+                const descIdx = headers.findIndex(h => h.includes('description') || h.includes('remarks') || h.includes('note'));
+                const statusIdx = headers.findIndex(h => h.includes('status'));
+
+                if (dateIdx !== -1 && row[dateIdx]) date = parseDate(row[dateIdx]);
+
+                if (statusIdx !== -1 && row[statusIdx]) {
+                    const status = row[statusIdx].toLowerCase();
+                    if (!status.includes('success') && !status.includes('completed')) continue;
+                }
+
+                if (amountIdx !== -1 && row[amountIdx]) {
+                    const val = row[amountIdx].replace(/[^0-9.-]/g, '');
+                    amount = parseFloat(val) || 0;
+                }
+
+                if (typeIdx !== -1 && row[typeIdx]) {
+                    const type = row[typeIdx].toLowerCase();
+                    if (type.includes('debit') || type.includes('dr')) isDebit = true;
+                } else {
+                    if (amount > 0) isDebit = true;
+                }
+
+                if (descIdx !== -1 && row[descIdx]) description = row[descIdx];
+
+            } else if (format === 'gpay') {
+                const dateIdx = headers.findIndex(h => h.includes('date'));
+                const amountIdx = headers.findIndex(h => h.includes('amount'));
+                const descIdx = headers.findIndex(h => h.includes('description') || h.includes('title'));
+                const statusIdx = headers.findIndex(h => h.includes('status'));
+
+                if (dateIdx !== -1 && row[dateIdx]) date = parseDate(row[dateIdx]);
+
+                if (statusIdx !== -1 && row[statusIdx]) {
+                    const status = row[statusIdx].toLowerCase();
+                    if (!status.includes('success') && !status.includes('completed')) continue;
+                }
+
+                if (amountIdx !== -1 && row[amountIdx]) {
+                    let val = row[amountIdx];
+                    if (val.includes('-')) isDebit = true;
+                    val = val.replace(/[^0-9.]/g, '');
+                    amount = parseFloat(val) || 0;
+                }
+
+                if (descIdx !== -1 && row[descIdx]) {
+                    description = row[descIdx];
+                    if (description.toLowerCase().startsWith('sent to') || description.toLowerCase().startsWith('paid to')) {
+                        isDebit = true;
+                    }
+                }
+
+            } else if (format === 'paytm') {
+                const dateIdx = headers.findIndex(h => h.includes('date'));
+                const debitIdx = headers.findIndex(h => h.includes('debit'));
+                const descIdx = headers.findIndex(h => h.includes('source') || h.includes('destination') || h.includes('activity'));
+                const statusIdx = headers.findIndex(h => h.includes('status'));
+
+                if (dateIdx !== -1 && row[dateIdx]) date = parseDate(row[dateIdx]);
+
+                if (statusIdx !== -1 && row[statusIdx]) {
+                    const status = row[statusIdx].toLowerCase();
+                    if (!status.includes('success') && !status.includes('completed')) continue;
+                }
+
+                if (debitIdx !== -1 && row[debitIdx]) {
+                    const val = row[debitIdx].replace(/[^0-9.-]/g, '');
+                    if (val) {
+                        amount = parseFloat(val) || 0;
+                        if (amount > 0) isDebit = true;
+                    }
+                }
+
+                if (descIdx !== -1 && row[descIdx]) description = row[descIdx];
+
+            } else {
+                // Generic
+                let dateIdx = -1, amountIdx = -1, debitIdx = -1, descIdx = -1, typeIdx = -1;
+                headers.forEach((h, j) => {
+                    if (h.includes('date') || h === 'dt') dateIdx = j;
+                    else if (h.includes('debit') || h.includes('withdrawal')) debitIdx = j;
+                    else if (h.includes('amount')) amountIdx = j;
+                    else if (h.includes('desc') || h.includes('particular') || h.includes('narration')) descIdx = j;
+                    else if (h.includes('type') || h.includes('dr/cr')) typeIdx = j;
+                });
+
+                if (dateIdx !== -1 && row[dateIdx]) date = parseDate(row[dateIdx]);
+
+                if (date) {
+                    if (debitIdx !== -1 && row[debitIdx]) {
+                        const val = row[debitIdx].replace(/[^0-9.-]/g, '');
+                        if (val) {
+                            amount = parseFloat(val) || 0;
+                            if (amount > 0) isDebit = true;
+                        }
+                    }
+                    if (!isDebit && amountIdx !== -1 && row[amountIdx]) {
+                        const val = row[amountIdx].replace(/[^0-9.-]/g, '');
+                        amount = parseFloat(val) || 0;
+                        if (typeIdx !== -1 && row[typeIdx]) {
+                            const type = row[typeIdx].toLowerCase();
+                            if (type.includes('dr') || type.includes('debit')) isDebit = true;
+                        } else {
+                            isDebit = true;
+                        }
+                    }
+                    if (descIdx !== -1 && row[descIdx]) description = row[descIdx];
+                }
+            }
+
+            if (date && amount > 0 && isDebit) {
+                description = description.replace(/Paid to /g, '').trim();
+                expenses.push({
+                    date: date.toISOString(),
+                    amount,
+                    description: description.trim(),
+                    category: 'Other'
+                });
+            }
+        } catch (e) {
+            console.error(`Error parsing CSV row ${i}:`, e);
+        }
+    }
+    return expenses;
 };
 
 exports.parseStatement = async (req, res) => {
@@ -236,16 +424,17 @@ exports.parseStatement = async (req, res) => {
         }
 
         const ext = req.file.originalname.split('.').pop().toLowerCase();
+        console.log(`[StatementController] Parsing file: ${req.file.originalname} (${ext})`);
+
         let expenses = [];
 
         if (ext === 'pdf') {
             expenses = await parsePdf(req.file.buffer);
         } else {
-            // expenses = await parseCsv(req.file.buffer);
-            // Fallback for now
-            expenses = [];
+            expenses = await parseCsv(req.file.buffer);
         }
 
+        console.log(`[StatementController] Found ${expenses.length} expenses`);
         res.json(expenses);
 
     } catch (error) {
