@@ -14,8 +14,11 @@
   "dependencies": {
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.5",
+    "csv-parser": "^3.2.0",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
-    "mysql2": "^3.16.0"
+    "multer": "^2.0.2",
+    "mysql2": "^3.16.0",
+    "pdf-parse": "^2.4.5"
   }
 }

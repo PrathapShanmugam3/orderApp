@@ -10,6 +10,7 @@ const authRoutes = require('./routes/authRoutes');
 const categoryRoutes = require('./routes/categoryRoutes');
 const expenseRoutes = require('./routes/expenseRoutes');
 const backupRoutes = require('./routes/backupRoutes');
+const statementRoutes = require('./routes/statementRoutes');
 
 const app = express();
 
@@ -23,6 +24,7 @@ app.use('/auth', authRoutes);           // /auth/register, /auth/login, /auth/pa
 app.use('/categories', categoryRoutes); // /categories CRUD
 app.use('/expenses', expenseRoutes);    // /expenses CRUD
 app.use('/admin', backupRoutes);        // /admin/backup, /admin/restore
+app.use('/statements', statementRoutes); // /statements/upload
 
 // Legacy routes (for backward compatibility)
 // These map old routes to new ones
