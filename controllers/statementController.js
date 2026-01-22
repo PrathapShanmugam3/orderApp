@@ -3,14 +3,47 @@ const csv = require('csv-parser');
 const fs = require('fs');
 const { Readable } = require('stream');
 
+const parseCsv = async (buffer) => {
+    const results = [];
+    const stream = Readable.from(buffer.toString());
+
+    return new Promise((resolve, reject) => {
+        stream
+            .pipe(csv({ headers: false })) // Treat as raw rows
+            .on('data', (data) => {
+                // csv-parser with headers:false returns object {0: 'a', 1: 'b'}
+                results.push(Object.values(data));
+            })
+            .on('end', () => {
+                console.log(`[StatementController] Parsed ${results.length} CSV rows`);
+                resolve(parseCsvRows(results));
+            })
+            .on('error', (err) => {
+                console.error("CSV Parse Error:", err);
+                reject(err);
+            });
+    });
+};
+
 // Helper to parse date string
 const parseDate = (dateStr) => {
     if (!dateStr) return null;
-    dateStr = dateStr.trim().replace(/[./]/g, '-');
+    dateStr = dateStr.trim();
+
+    // Handle dd/MM/yyyy HH:mm:ss (Common in CSVs)
+    // Remove time part if present
+    if (dateStr.includes(' ')) {
+        // Check if it's "d MMM yyyy" or "dd/MM/yyyy HH:mm"
+        if (dateStr.match(/\d{1,2}\/\d{1,2}\/\d{4}/)) {
+            dateStr = dateStr.split(' ')[0];
+        }
+    }
+
+    dateStr = dateStr.replace(/[./]/g, '-');
 
     // Try ISO first
     let d = new Date(dateStr);
-    if (!isNaN(d.getTime())) return d;
+    if (!isNaN(d.getTime()) && dateStr.includes('-') && dateStr.length >= 10) return d;
 
     // Try d MMM yyyy (e.g., 2 Sep 2023) or d MMM, yyyy
     let match = dateStr.match(/^(\d{1,2})\s+([A-Za-z]+),?\s+(\d{4})$/);
@@ -48,12 +81,21 @@ const parseDate = (dateStr) => {
         let p1 = parseInt(parts[0]);
         let p2 = parseInt(parts[1]);
         let p3 = parseInt(parts[2]);
+
+        // Handle 2-digit years? No, usually 4.
+        // But sometimes p3 is time? No we stripped time.
+
         if (p3 < 100) p3 += 2000;
 
         // Guess format: dd-mm-yyyy vs mm-dd-yyyy
+        // If p1 > 12, it must be day.
         if (p1 > 12) return new Date(p3, p2 - 1, p1); // dd-mm-yyyy
+
+        // If p2 > 12, it must be day.
         if (p2 > 12) return new Date(p3, p1 - 1, p2); // mm-dd-yyyy
-        return new Date(p3, p2 - 1, p1); // Default dd-mm-yyyy
+
+        // Ambiguous: Default to dd-mm-yyyy (common in India)
+        return new Date(p3, p2 - 1, p1);
     }
 
     return null;
@@ -223,28 +265,7 @@ const parsePdf = async (buffer) => {
     }
 };
 
-const parseCsv = async (buffer) => {
-    const content = buffer.toString('utf8');
 
-    // Simple CSV parser that handles quoted fields
-    // We can use the 'csv-parser' library but we need to stream it.
-    // Since we have the buffer, let's just split by newline for simplicity 
-    // and use a regex for splitting commas respecting quotes.
-
-    // Let's use a simple line-based approach first as our logic is line-based mostly
-    const lines = content.split(/\r?\n/);
-    const parsedRows = [];
-
-    for (let line of lines) {
-        // Basic CSV split, handling quotes is complex but let's try simple split first
-        // or use a regex: /,(?=(?:(?:[^"]*"){2})*[^"]*$)/
-        const row = line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(s => s.trim().replace(/^"|"$/g, ''));
-        parsedRows.push(row);
-    }
-
-    // Reuse the logic from Dart port
-    return parseCsvRows(parsedRows);
-};
 
 const parseCsvRows = (rows) => {
     let expenses = [];
