@@ -2,6 +2,8 @@ const pdf = require('pdf-parse');
 const csv = require('csv-parser');
 const fs = require('fs');
 const { Readable } = require('stream');
+const crypto = require('crypto');
+const ExpenseModel = require('../models/expenseModel');
 
 const parseCsv = async (buffer) => {
     const results = [];
@@ -132,354 +134,78 @@ const extractPayeeName = (fullText, fallback) => {
     return fallback;
 };
 
-const processTransactionBlock = (block, expenses) => {
-    if (!block || block.length === 0) return;
-    const fullText = block.join(' ');
-
-    // 1. Extract Date
-    const dateRegex = /(\d{2}[-/]\d{2}[-/]\d{4}|\d{1,2}\s+[A-Za-z]+,?\s+\d{4}|[A-Za-z]+\s+\d{1,2},?\s+\d{4}|\d{1,2}\s+[A-Za-z]{3})/;
-    const dateMatch = block[0].match(dateRegex);
-    if (!dateMatch) return;
-
-    const date = parseDate(dateMatch[0]);
-    if (!date) return;
-
-    // 2. Extract Amount
-    const amountRegex = /(?:₹|Rs\.?|INR|INR\s)\s*([\d,]+(?:\.\d{1,2})?)/g;
-    let allAmounts = [];
-    let match;
-    while ((match = amountRegex.exec(fullText)) !== null) {
-        const val = parseFloat(match[1].replace(/,/g, ''));
-        if (val > 0) allAmounts.push(val);
-    }
-
-    // 3. Identify Debit vs Credit & Description & Category
-    let isDebit = false;
-    let amount = 0;
-    let description = "";
-    let category = "Other";
-
-    // Extract Tag
-    const tagRegex = /(?:Tag:\s*)?#\s*([A-Za-z0-9]+)/;
-    const tagMatch = fullText.match(tagRegex);
-    if (tagMatch) {
-        const tag = tagMatch[1].trim();
-        if (tag) category = tag.charAt(0).toUpperCase() + tag.slice(1).toLowerCase();
-    }
-
-    // GPay / PhonePe / Paytm Logic
-    const paidToRegex = /(?:Paid to|Sent to|Money Sent to|Paid Successfully to)\s+(.+?)(?:\s+(?:DEBIT|CREDIT|₹|Rs|INR|Transaction|Txn|Ref)|$)/;
-    const paidToMatch = fullText.match(paidToRegex);
-
-    if (paidToMatch) {
-        isDebit = true;
-        description = paidToMatch[1].trim();
-        const garbage = ['Transaction ID', 'Txn ID', 'Ref No', 'UPI', 'Debited from'];
-        garbage.forEach(g => {
-            if (description.includes(g)) description = description.split(g)[0].trim();
-        });
-
-        // Fallback Amount Logic
-        if (allAmounts.length === 0) {
-            const looseAmountRegex = /\b\d+(?:[.,]\d+)*\b/g;
-            let candidates = [];
-            let m;
-            while ((m = looseAmountRegex.exec(fullText)) !== null) {
-                const s = m[0];
-                if (s.includes(':')) continue; // Exclude time
-                if (s.length === 4 && (s.startsWith('20') || s.startsWith('19'))) {
-                    const val = parseInt(s);
-                    if (val > 1900 && val < 2100) continue; // Exclude year
-                }
-                const val = parseFloat(s.replace(/,/g, ''));
-                if (val > 0 && val < 10000000) candidates.push(val);
-            }
-
-            if (candidates.length > 0) {
-                const decimalCandidates = candidates.filter(c => c % 1 !== 0);
-                if (decimalCandidates.length > 0) {
-                    allAmounts = [decimalCandidates[0]];
-                } else {
-                    const day = date.getDate();
-                    candidates = candidates.filter(c => c !== day);
-                    if (candidates.length > 0) allAmounts = [candidates[candidates.length - 1]];
-                }
-            }
-        }
-    } else if (fullText.includes("Received from")) {
-        return; // Income
-    } else if (fullText.includes("Debited from") || fullText.toUpperCase().includes("DEBIT")) {
-        isDebit = true;
-        description = "Debit Transaction";
-    } else if (fullText.toUpperCase().includes("/DR") || fullText.toUpperCase().includes(" DR ")) {
-        isDebit = true;
-    }
-
-    // Negative Amount Check
-    const negativeAmountRegex = /-\s*(?:Rs\.?|₹)\s*([\d,]+(?:\.\d{1,2})?)/;
-    const negMatch = fullText.match(negativeAmountRegex);
-    if (negMatch) {
-        isDebit = true;
-        amount = parseFloat(negMatch[1].replace(/,/g, ''));
-    } else if (allAmounts.length > 0) {
-        amount = allAmounts[0];
-    }
-
-    if (!isDebit || amount === 0) return;
-
-    if (!description || description === "Debit Transaction") {
-        description = extractPayeeName(fullText, "Expense");
-    }
-
-    description = description.replace(/\s+/g, ' ').trim();
-    description = description.replace(/^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$/g, '');
-    if (description.length > 50) description = description.substring(0, 50);
-
-    expenses.push({
-        date: date.toISOString(),
-        amount,
-        description,
-        category
-    });
-};
-
-// Skip the "in transaction section" check and match dates directly
-const parseGooglePayPdf = (lines) => {
-    const expenses = [];
-    console.log('[GooglePay Parser] Starting parse...');
-    console.log('[GooglePay Parser] Total lines:', lines.length);
-
-    for (let i = 0; i < lines.length; i++) {
-        const line = lines[i].trim();
-        // Match date on its own line: "03 Jul, 2025" or "3 Jul 2025"
-        const dateMatch = line.match(/^(\d{1,2}\s+[A-Za-z]{3},?\s+\d{4})$/);
-        if (!dateMatch) continue;
-
-        const date = parseDate(dateMatch[1]);
-        if (!date) {
-            console.log(`[GooglePay] Failed to parse date: ${dateMatch[1]}`);
-            continue;
-        }
-        console.log(`[GooglePay] Found date: ${dateMatch[1]} => ${date.toISOString()}`);
-
-        let description = '';
-        let amount = 0;
-        let isDebit = false;
-
-        // Look ahead up to 10 lines
-        for (let j = i + 1; j < Math.min(i + 10, lines.length); j++) {
-            const next = lines[j].trim();
-
-            // Stop if we hit another date
-            if (next.match(/^\d{1,2}\s+[A-Za-z]{3},?\s+\d{4}$/)) {
-                break;
-            }
-
-            // Check for "Paid to" (debit) - Case insensitive and flexible spaces
-            if (next.match(/^Paid\s+to\s+/i)) {
-                isDebit = true;
-                description = next.replace(/^Paid\s+to\s+/i, '').trim();
-                console.log(`[GooglePay]   Found DEBIT: ${description}`);
-            }
-
-            // Check for "Received from" (credit)
-            if (next.match(/^Received\s+from\s+/i)) {
-                isDebit = false;
-                console.log(`[GooglePay]   Found CREDIT (skip)`);
-                break;
-            }
-
-            // Extract amount
-            const amt = next.match(/^[₹Rs.]?\s*(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)$/);
-            if (amt) {
-                const val = parseFloat(amt[1].replace(/,/g, ''));
-                if (val > 0 && val < 1000000) {
-                    amount = val;
-                    console.log(`[GooglePay]   Found amount: ${amount}`);
-                }
-            }
-        }
-
-        if (isDebit && amount > 0 && description) {
-            expenses.push({
-                date: date.toISOString(),
-                amount,
-                description: description.substring(0, 50),
-                category: 'Other'
-            });
-            console.log(`[GooglePay] ✓ Added: ${description} - ${amount}`);
-        }
-    }
-    console.log(`[GooglePay] FINAL: Found ${expenses.length} expenses`);
-    return expenses;
-};
-
-const parsePaytmPdf = (lines) => {
-    const expenses = [];
-    console.log('[Paytm Parser] total lines:', lines.length);
-
-    // Try to extract statement period from header
-    let periodStartMonth = null;
-    let periodStartYear = null;
-    let periodEndMonth = null;
-    let periodEndYear = null;
-
-    const monthMap = { 'jan': 0, 'feb': 1, 'mar': 2, 'apr': 3, 'may': 4, 'jun': 5, 'jul': 6, 'aug': 7, 'sep': 8, 'oct': 9, 'nov': 10, 'dec': 11 };
-
-    // Scan first 50 lines for period
-    for (let i = 0; i < Math.min(50, lines.length); i++) {
-        const line = lines[i].toLowerCase();
-        // Match: "1 APR'25 - 21 JAN'26" or "1 APR '25 - 21 JAN '26" or "1 Apr 2025 - 21 Jan 2026"
-        const periodMatch = line.match(/(\d{1,2})\s+([a-z]{3})['\s]*(\d{2,4})\s*-\s*(\d{1,2})\s+([a-z]{3})['\s]*(\d{2,4})/);
-        if (periodMatch) {
-            periodStartMonth = monthMap[periodMatch[2]];
-            let y1 = parseInt(periodMatch[3]);
-            periodStartYear = y1 < 100 ? 2000 + y1 : y1;
-
-            periodEndMonth = monthMap[periodMatch[5]];
-            let y2 = parseInt(periodMatch[6]);
-            periodEndYear = y2 < 100 ? 2000 + y2 : y2;
-
-            console.log(`[Paytm] Found statement period: ${periodMatch[2]} ${periodStartYear} - ${periodMatch[5]} ${periodEndYear}`);
-            break;
-        }
-    }
-
-    for (let i = 0; i < lines.length; i++) {
-        const line = lines[i].trim();
-        // Match date on its own line: "17 Jan"
-        const dateMatch = line.match(/^(\d{1,2})\s+([A-Za-z]{3})$/);
-        if (!dateMatch) continue;
-
-        const day = parseInt(dateMatch[1]);
-        const monthStr = dateMatch[2].toLowerCase();
-        const month = monthMap[monthStr];
-
-        if (month === undefined) continue;
-
-        // Smart year inference
-        let year = new Date().getFullYear(); // Default fallback
-
-        if (periodStartYear && periodEndYear) {
-            if (periodStartYear === periodEndYear) {
-                year = periodStartYear;
-            } else {
-                // Cross-year logic
-                // If month is >= start month, it's start year (e.g. Apr-Dec 2025)
-                // If month is <= end month, it's end year (e.g. Jan 2026)
-                // But we need to handle wrap around carefully.
-                // Assuming standard chronological order within the period.
-
-                if (month >= periodStartMonth) {
-                    year = periodStartYear;
-                } else {
-                    year = periodEndYear;
-                }
-            }
-        } else {
-            // Fallback: if month is > current month + 2, assume last year
-            const now = new Date();
-            if (month > now.getMonth() + 2) {
-                year = now.getFullYear() - 1;
-            }
-        }
-
-        const date = new Date(year, month, day);
-
-        let description = '';
-        let amount = 0;
-        let category = 'Other';
-        let isDebit = false;
-
-        for (let j = i + 1; j < Math.min(i + 15, lines.length); j++) {
-            const next = lines[j].trim();
-            if (next.match(/^\d{1,2}\s+[A-Za-z]{3}$/)) break;
-
-            if (next.startsWith('Paid to ')) {
-                isDebit = true;
-                // Clean description
-                let desc = next.replace('Paid to ', '');
-
-                // Remove common technical suffixes
-                const separators = ['UPI ID', 'UPI Ref', 'Ref No', 'Order ID', 'Txn ID', 'Mob. No.'];
-                for (const sep of separators) {
-                    // Case insensitive check
-                    const regex = new RegExp(sep, 'i');
-                    const match = desc.match(regex);
-                    if (match) {
-                        desc = desc.substring(0, match.index);
-                    }
-                }
-
-                description = desc.trim();
-            }
-
-            const tag = next.match(/^#\s*([A-Za-z]+)$/);
-            if (tag) {
-                category = tag[1].charAt(0).toUpperCase() + tag[1].slice(1);
-            }
-
-            const amt = next.match(/^(?:Rs\.?|₹)?\s*(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)$/);
-            if (amt && parseFloat(amt[1].replace(/,/g, '')) < 1000000) {
-                amount = parseFloat(amt[1].replace(/,/g, ''));
-            }
-        }
-
-        if (isDebit && amount > 0 && description) {
-            expenses.push({
-                date: date.toISOString(),
-                amount,
-                description: description.substring(0, 50),
-                category
-            });
-            console.log(`[Paytm] ✓ Added: ${description} - ${amount} (${date.toISOString().split('T')[0]})`);
-        }
-    }
-    console.log(`[Paytm] FINAL: Found ${expenses.length} expenses`);
-    return expenses;
-};
-
 const parsePdf = async (buffer) => {
     try {
         const data = await pdf(buffer);
         const text = data.text;
         const lines = text.split('\n');
 
-        console.log('[StatementController] PDF text extracted, analyzing format...');
+        console.log('[StatementController] PDF text extracted, using unified parser...');
+        const expenses = [];
 
-        // Detect format
-        const textLower = text.toLowerCase();
-        let expenses = [];
+        // Unified regex approach matching the Python reference
+        // Date patterns: DD/MM/YYYY, DD-MM-YYYY, DD MMM YYYY, etc.
+        const dateRegex = /(\d{2}[/-]\d{2}[/-]\d{4}|\d{2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{2,4})/i;
 
-        if (textLower.includes('google pay') || textLower.includes('googlepay')) {
-            console.log('[StatementController] Detected Google Pay PDF format');
-            expenses = parseGooglePayPdf(lines);
-        } else if (textLower.includes('paytm') || textLower.includes('passbook payments')) {
-            console.log('[StatementController] Detected Paytm PDF format');
-            expenses = parsePaytmPdf(lines);
-        } else {
-            // Fallback to generic PhonePe parser
-            console.log('[StatementController] Using generic PDF parser (PhonePe)');
-            const dateStartRegex = /^(\d{2}[-/]\d{2}[-/]\d{4}|\d{1,2}\s+[A-Za-z]+,?\s+\d{4}|[A-Za-z]+\s+\d{1,2},?\s+\d{4}|\d{1,2}\s+[A-Za-z]{3})/;
-            let transactionBuffer = [];
+        for (const line of lines) {
+            const trimmedLine = line.trim();
+            if (trimmedLine.length < 10) continue;
 
-            for (const line of lines) {
-                const trimmed = line.trim();
-                if (!trimmed) continue;
+            const dateMatch = trimmedLine.match(dateRegex);
+            if (dateMatch) {
+                // Found a line with a date. Now look for amount.
+                // Strategy: Split line, look for numbers.
+                const parts = trimmedLine.split(/\s+/);
+                const potentialAmounts = [];
+                const descriptionParts = [];
 
-                if (dateStartRegex.test(trimmed)) {
-                    if (transactionBuffer.length > 0) {
-                        processTransactionBlock(transactionBuffer, expenses);
-                        transactionBuffer = [];
-                    }
-                    transactionBuffer.push(trimmed);
-                } else if (transactionBuffer.length > 0) {
-                    transactionBuffer.push(trimmed);
+                // Check for Credit indicators
+                if (trimmedLine.includes('Cr') || trimmedLine.includes('Credit')) {
+                    continue; // Skip credits
                 }
-            }
 
-            if (transactionBuffer.length > 0) {
-                processTransactionBlock(transactionBuffer, expenses);
+                for (const part of parts) {
+                    // Clean part to check if number
+                    const cleanPart = part.replace(/,/g, '');
+                    const val = parseFloat(cleanPart);
+
+                    if (!isNaN(val) && isFinite(val)) {
+                        // Filter out years (simple heuristic: if it looks like the year in the date, skip?)
+                        // But for now, just collect floats.
+                        potentialAmounts.push(val);
+                    } else {
+                        // Not a number, add to description if it's not the date string itself
+                        // (Simple check: part is not exactly the date match)
+                        if (!dateMatch[0].includes(part)) {
+                            descriptionParts.push(part);
+                        }
+                    }
+                }
+
+                let amount = 0.0;
+                if (potentialAmounts.length > 0) {
+                    // Heuristic: Take the last number as the amount
+                    amount = potentialAmounts[potentialAmounts.length - 1];
+                }
+
+                if (amount > 0) {
+                    const dateStr = dateMatch[0];
+                    const date = parseDate(dateStr);
+
+                    if (date) {
+                        const notes = descriptionParts.join(' ').trim();
+                        // Clean notes
+                        const cleanNotes = notes.replace(/[^a-zA-Z0-9\s]/g, '').trim();
+
+                        expenses.push({
+                            date: date.toISOString(),
+                            amount: amount,
+                            category: 'Uncategorized',
+                            description: cleanNotes || 'Expense',
+                            notes: cleanNotes || 'Expense'
+                        });
+                    }
+                }
             }
         }
 
@@ -496,13 +222,17 @@ const parseCsvRows = (rows) => {
     let expenses = [];
     if (rows.length === 0) return [];
 
-    // 1. Identify Headers
-    let headerIndex = -1;
-    let headers = [];
+    // Normalize headers
+    let headers = rows[0].map(h => h.toLowerCase().trim());
+    // If first row doesn't look like headers, try to find them?
+    // The Python code assumes headers are available or normalized.
+    // csv-parser with headers:false returns rows as arrays, so rows[0] is the first line.
+    // We need to identify which row is the header.
 
-    for (let i = 0; i < rows.length; i++) {
+    let headerIndex = -1;
+    for (let i = 0; i < Math.min(10, rows.length); i++) {
         const rowStr = rows[i].map(e => e.toLowerCase().trim());
-        if (rowStr.includes('date') || rowStr.includes('transaction date') || rowStr.includes('dt')) {
+        if (rowStr.some(c => c.includes('date') || c.includes('dt'))) {
             headerIndex = i;
             headers = rowStr;
             break;
@@ -511,153 +241,70 @@ const parseCsvRows = (rows) => {
 
     if (headerIndex === -1) return [];
 
-    // 2. Detect Format
-    let format = 'generic';
-    if (headers.includes('phonepe') || (headers.includes('transaction id') && headers.includes('provider reference id'))) {
-        format = 'phonepe';
-    } else if (headers.includes('google pay') || (headers.includes('transaction id') && headers.includes('status') && headers.includes('amount'))) {
-        format = 'gpay';
-    } else if (headers.includes('wallet txn id') || (headers.includes('debit') && headers.includes('credit') && headers.includes('activity'))) {
-        format = 'paytm';
-    }
+    console.log(`[StatementController] Found headers at index ${headerIndex}:`, headers);
 
-    console.log(`[StatementController] Detected CSV Format: ${format}`);
-
-    // 3. Parse Rows
     for (let i = headerIndex + 1; i < rows.length; i++) {
         const row = rows[i];
-        if (row.length === 0 || (row.length === 1 && !row[0])) continue;
+        if (row.length === 0) continue;
 
-        try {
-            let date = null;
-            let amount = 0;
-            let description = "Expense";
-            let isDebit = false;
+        let date = null;
+        let amount = 0;
+        let description = "Expense";
+        let isCredit = false;
+        let txnId = null;
 
-            if (format === 'phonepe') {
-                const dateIdx = headers.findIndex(h => h.includes('date'));
-                const amountIdx = headers.findIndex(h => h.includes('amount'));
-                const typeIdx = headers.findIndex(h => h.includes('type') || h.includes('cr/dr'));
-                const descIdx = headers.findIndex(h => h.includes('description') || h.includes('remarks') || h.includes('note'));
-                const statusIdx = headers.findIndex(h => h.includes('status'));
+        // Column mapping heuristics
+        for (let j = 0; j < headers.length; j++) {
+            const col = headers[j];
+            const val = row[j] ? row[j].trim() : '';
+            if (!val) continue;
 
-                if (dateIdx !== -1 && row[dateIdx]) date = parseDate(row[dateIdx]);
-
-                if (statusIdx !== -1 && row[statusIdx]) {
-                    const status = row[statusIdx].toLowerCase();
-                    if (!status.includes('success') && !status.includes('completed')) continue;
-                }
-
-                if (amountIdx !== -1 && row[amountIdx]) {
-                    const val = row[amountIdx].replace(/[^0-9.-]/g, '');
-                    amount = parseFloat(val) || 0;
-                }
-
-                if (typeIdx !== -1 && row[typeIdx]) {
-                    const type = row[typeIdx].toLowerCase();
-                    if (type.includes('debit') || type.includes('dr')) isDebit = true;
-                } else {
-                    if (amount > 0) isDebit = true;
-                }
-
-                if (descIdx !== -1 && row[descIdx]) description = row[descIdx];
-
-            } else if (format === 'gpay') {
-                const dateIdx = headers.findIndex(h => h.includes('date'));
-                const amountIdx = headers.findIndex(h => h.includes('amount'));
-                const descIdx = headers.findIndex(h => h.includes('description') || h.includes('title'));
-                const statusIdx = headers.findIndex(h => h.includes('status'));
-
-                if (dateIdx !== -1 && row[dateIdx]) date = parseDate(row[dateIdx]);
-
-                if (statusIdx !== -1 && row[statusIdx]) {
-                    const status = row[statusIdx].toLowerCase();
-                    if (!status.includes('success') && !status.includes('completed')) continue;
-                }
-
-                if (amountIdx !== -1 && row[amountIdx]) {
-                    let val = row[amountIdx];
-                    if (val.includes('-')) isDebit = true;
-                    val = val.replace(/[^0-9.]/g, '');
-                    amount = parseFloat(val) || 0;
-                }
-
-                if (descIdx !== -1 && row[descIdx]) {
-                    description = row[descIdx];
-                    if (description.toLowerCase().startsWith('sent to') || description.toLowerCase().startsWith('paid to')) {
-                        isDebit = true;
-                    }
-                }
-
-            } else if (format === 'paytm') {
-                const dateIdx = headers.findIndex(h => h.includes('date'));
-                const debitIdx = headers.findIndex(h => h.includes('debit'));
-                const descIdx = headers.findIndex(h => h.includes('source') || h.includes('destination') || h.includes('activity'));
-                const statusIdx = headers.findIndex(h => h.includes('status'));
-
-                if (dateIdx !== -1 && row[dateIdx]) date = parseDate(row[dateIdx]);
-
-                if (statusIdx !== -1 && row[statusIdx]) {
-                    const status = row[statusIdx].toLowerCase();
-                    if (!status.includes('success') && !status.includes('completed')) continue;
-                }
-
-                if (debitIdx !== -1 && row[debitIdx]) {
-                    const val = row[debitIdx].replace(/[^0-9.-]/g, '');
-                    if (val) {
-                        amount = parseFloat(val) || 0;
-                        if (amount > 0) isDebit = true;
-                    }
-                }
-
-                if (descIdx !== -1 && row[descIdx]) description = row[descIdx];
-
-            } else {
-                // Generic
-                let dateIdx = -1, amountIdx = -1, debitIdx = -1, descIdx = -1, typeIdx = -1;
-                headers.forEach((h, j) => {
-                    if (h.includes('date') || h === 'dt') dateIdx = j;
-                    else if (h.includes('debit') || h.includes('withdrawal')) debitIdx = j;
-                    else if (h.includes('amount')) amountIdx = j;
-                    else if (h.includes('desc') || h.includes('particular') || h.includes('narration')) descIdx = j;
-                    else if (h.includes('type') || h.includes('dr/cr')) typeIdx = j;
-                });
-
-                if (dateIdx !== -1 && row[dateIdx]) date = parseDate(row[dateIdx]);
-
-                if (date) {
-                    if (debitIdx !== -1 && row[debitIdx]) {
-                        const val = row[debitIdx].replace(/[^0-9.-]/g, '');
-                        if (val) {
-                            amount = parseFloat(val) || 0;
-                            if (amount > 0) isDebit = true;
-                        }
-                    }
-                    if (!isDebit && amountIdx !== -1 && row[amountIdx]) {
-                        const val = row[amountIdx].replace(/[^0-9.-]/g, '');
-                        amount = parseFloat(val) || 0;
-                        if (typeIdx !== -1 && row[typeIdx]) {
-                            const type = row[typeIdx].toLowerCase();
-                            if (type.includes('dr') || type.includes('debit')) isDebit = true;
-                        } else {
-                            isDebit = true;
-                        }
-                    }
-                    if (descIdx !== -1 && row[descIdx]) description = row[descIdx];
-                }
+            // Date detection
+            if (col.includes('date')) {
+                const d = parseDate(val);
+                if (d) date = d;
             }
 
-            if (date && amount > 0 && isDebit) {
-                description = description.replace(/Paid to /g, '').trim();
-                expenses.push({
-                    date: date.toISOString(),
-                    amount,
-                    description: description.trim(),
-                    category: 'Other'
-                });
+            // Description detection
+            if (['description', 'narration', 'particulars', 'remark', 'details'].some(k => col.includes(k))) {
+                description = val;
             }
-        } catch (e) {
-            console.error(`Error parsing CSV row ${i}:`, e);
+
+            // Transaction ID detection
+            if (['txn', 'ref', 'id', 'cheque', 'utr'].some(k => col.includes(k)) && !txnId) {
+                txnId = val;
+            }
+
+            // Amount detection
+            const cleanVal = parseFloat(val.replace(/[^0-9.]/g, ''));
+            if (isNaN(cleanVal)) continue;
+
+            if (col.includes('debit') || col.includes('withdrawal')) {
+                if (cleanVal > 0) amount = cleanVal;
+            } else if (col.includes('credit') || col.includes('deposit')) {
+                if (cleanVal > 0) isCredit = true;
+            } else if (col.includes('amount') && amount === 0) {
+                // Fallback
+                if (cleanVal > 0) amount = cleanVal;
+            }
+        }
+
+        if (isCredit) continue; // Skip income
+
+        if (date && amount > 0) {
+            if (!txnId) {
+                // Generate ID if missing
+                const rawString = `${date.toISOString()}_${amount}_${description}`;
+                txnId = crypto.createHash('md5').update(rawString).digest('hex');
+            }
+
+            expenses.push({
+                date: date.toISOString(),
+                amount,
+                description,
+                category: 'Uncategorized',
+                transaction_id: txnId
+            });
         }
     }
     return expenses;
@@ -669,8 +316,14 @@ exports.parseStatement = async (req, res) => {
             return res.status(400).json({ error: 'No file uploaded' });
         }
 
+        // Get user ID from auth middleware or body
+        const userId = req.userId || req.body.user_id;
+        if (!userId) {
+            return res.status(401).json({ error: 'User ID required' });
+        }
+
         const ext = req.file.originalname.split('.').pop().toLowerCase();
-        console.log(`[StatementController] Parsing file: ${req.file.originalname} (${ext})`);
+        console.log(`[StatementController] Parsing file: ${req.file.originalname} (${ext}) for User: ${userId}`);
 
         let expenses = [];
 
@@ -680,8 +333,46 @@ exports.parseStatement = async (req, res) => {
             expenses = await parseCsv(req.file.buffer);
         }
 
-        console.log(`[StatementController] Found ${expenses.length} expenses`);
-        res.json(expenses);
+        console.log(`[StatementController] Found ${expenses.length} raw expenses`);
+
+        let inserted = 0;
+        let skipped = 0;
+
+        for (const expense of expenses) {
+            // Use existing transaction ID or generate if not present
+            let transactionId = expense.transaction_id;
+            if (!transactionId) {
+                const rawString = `${expense.date}_${expense.amount}_${expense.description}`;
+                transactionId = crypto.createHash('md5').update(rawString).digest('hex');
+            }
+
+            // Check if exists
+            const exists = await ExpenseModel.findByTransactionId(userId, transactionId);
+            if (exists) {
+                skipped++;
+                continue;
+            }
+
+            // Insert
+            await ExpenseModel.createWithTransactionId(
+                userId,
+                expense.amount,
+                expense.category || 'Other',
+                expense.date,
+                expense.description,
+                transactionId
+            );
+            inserted++;
+        }
+
+        console.log(`[StatementController] Processed: ${inserted} inserted, ${skipped} skipped`);
+
+        res.json({
+            message: 'Statement processed successfully',
+            totalFound: expenses.length,
+            inserted,
+            skipped
+        });
 
     } catch (error) {
         console.error("Parse Error:", error);

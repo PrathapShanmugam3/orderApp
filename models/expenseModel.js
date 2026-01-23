@@ -126,6 +126,25 @@ class ExpenseModel {
         await pool.execute('DELETE FROM expense WHERE id = ?', [id]);
         return true;
     }
+
+    // Check if transaction exists
+    static async findByTransactionId(userId, transactionId) {
+        const [rows] = await pool.execute(
+            'SELECT id FROM expense WHERE user_id = ? AND transaction_id = ?',
+            [userId, transactionId]
+        );
+        return rows.length > 0;
+    }
+
+    // Create expense with transaction ID
+    static async createWithTransactionId(userId, amount, category, date, notes, transactionId) {
+        const formattedDate = new Date(date).toISOString().slice(0, 19).replace('T', ' ');
+        const [result] = await pool.execute(
+            'INSERT INTO expense (user_id, amount, category, date, notes, transaction_id) VALUES (?, ?, ?, ?, ?, ?)',
+            [userId, amount, category, formattedDate, notes || '', transactionId]
+        );
+        return { id: result.insertId, userId, amount, category, date, notes, transactionId };
+    }
 }
 
 module.exports = ExpenseModel;

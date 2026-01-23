@@ -128,6 +128,20 @@ async function updateSchema() {
             console.log('Indexes might already exist, skipping.');
         }
 
+        // 5. Add transaction_id to expense
+        console.log('Checking expense columns for transaction_id...');
+        const [expColumns] = await pool.execute("SHOW COLUMNS FROM expense");
+        const hasTransactionId = expColumns.some(c => c.Field === 'transaction_id');
+
+        if (!hasTransactionId) {
+            console.log('Adding transaction_id column to expense...');
+            await pool.execute('ALTER TABLE expense ADD COLUMN transaction_id VARCHAR(255) DEFAULT NULL');
+            await pool.execute('CREATE INDEX idx_expense_transaction_id ON expense(transaction_id)');
+            console.log('transaction_id column and index added.');
+        } else {
+            console.log('transaction_id column already exists.');
+        }
+
         // 3. Set admin user (optional, set user 3 as admin based on previous output)
         // User 3 is admin@gmail.co
         console.log('Setting user 3 as admin...');

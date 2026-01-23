@@ -48,12 +48,14 @@ CREATE TABLE IF NOT EXISTS expense (
   date DATETIME NOT NULL,
   notes TEXT,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  transaction_id VARCHAR(255) DEFAULT NULL,
   FOREIGN KEY (user_id) REFERENCES app_users(id) ON DELETE CASCADE
 );
 
 -- Index for faster queries
 CREATE INDEX idx_expense_user_date ON expense(user_id, date);
 CREATE INDEX idx_expense_category ON expense(user_id, category);
+CREATE INDEX idx_expense_transaction_id ON expense(transaction_id);
 
 -- Roles table
 CREATE TABLE IF NOT EXISTS roles (
